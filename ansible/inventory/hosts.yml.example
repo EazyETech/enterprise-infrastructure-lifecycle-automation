@@ -1,0 +1,16 @@
+# Copy this file to hosts.yml (which is gitignored) and adjust for your lab:
+#   cp inventory/hosts.yml.example inventory/hosts.yml
+---
+all:
+  children:
+    linux:
+      hosts:
+        servera:
+        serverb:
+        serverc:
+        serverd:
+    windows:
+      # Add your Windows Server VM here once WinRM is configured, for example:
+      #   winserver01:
+      #     ansible_host: 10.1.23.130
+      hosts: {}

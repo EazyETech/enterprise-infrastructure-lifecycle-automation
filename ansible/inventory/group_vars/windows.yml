@@ -1,0 +1,21 @@
+---
+# WinRM connection settings for the lab.
+# The password must come from an encrypted Ansible Vault file, never from plain text.
+ansible_connection: winrm
+ansible_port: 5986
+ansible_winrm_transport: ntlm
+ansible_winrm_scheme: https
+# Lab only: self signed certificate. Use a trusted certificate in production.
+ansible_winrm_server_cert_validation: ignore
+ansible_user: Administrator
+ansible_password: "{{ vault_windows_password }}"
+
+# Desired state: services that must be running on every Windows host
+required_services:
+  - W32Time
+  - WinRM
+  - EventLog
+
+# Maintenance safety switches (override on the command line with -e)
+authorize_updates: false
+allow_reboot: false

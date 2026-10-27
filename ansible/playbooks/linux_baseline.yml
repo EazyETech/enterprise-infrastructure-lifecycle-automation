@@ -1,0 +1,85 @@
+---
+# Collects a read only health baseline from Linux hosts.
+# Run before maintenance so you have something to compare against afterward.
+#
+#   ansible-playbook playbooks/linux_baseline.yml
+#
+- name: Linux baseline health check
+  hosts: linux
+  gather_facts: true
+  become: false
+
+  tasks:
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Build list of real filesystems with usage
+      ansible.builtin.set_fact:
+        fs_usage: >-
+          {{ fs_usage | default([]) + [{
+               'mount': item.mount,
+               'size_gb': (item.size_total / 1024 / 1024 / 1024) | round(1),
+               'used_percent': ((item.size_total - item.size_available) * 100 / item.size_total) | round(1)
+             }] }}
+      loop: "{{ ansible_facts.mounts }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when:
+        - item.fstype in ['xfs', 'ext4', 'btrfs']
+        - item.size_total > 0
+
+    - name: Check required services
+      ansible.builtin.set_fact:
+        service_state: >-
+          {{ service_state | default({}) | combine({
+               item: (ansible_facts.services[item ~ '.service'].state
+                      | default('not-found'))
+             }) }}
+      loop: "{{ required_services }}"
+
+    - name: Assemble baseline report
+      ansible.builtin.set_fact:
+        baseline:
+          host: "{{ inventory_hostname }}"
+          os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+          kernel: "{{ ansible_facts.kernel }}"
+          uptime_hours: "{{ (ansible_facts.uptime_seconds / 3600) | round(1) }}"
+          filesystems: "{{ fs_usage | default([]) }}"
+          services: "{{ service_state }}"
+
+    - name: Show baseline
+      ansible.builtin.debug:
+        var: baseline
+
+    - name: Warn about filesystems above the warning threshold
+      ansible.builtin.debug:
+        msg: "WARNING: {{ item.mount }} is {{ item.used_percent }}% full"
+      loop: "{{ baseline.filesystems }}"
+      loop_control:
+        label: "{{ item.mount }}"
+      when: item.used_percent | float >= disk_warn_percent | float
+
+    - name: Warn about required services that are not running
+      ansible.builtin.debug:
+        msg: "WARNING: service {{ item.key }} is {{ item.value }}"
+      loop: "{{ baseline.services | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when: item.value != 'running'
+
+    - name: Make sure the reports directory exists on the controller
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../reports"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Save baseline report on the controller
+      ansible.builtin.copy:
+        content: "{{ baseline | to_nice_json }}\n"
+        dest: "{{ playbook_dir }}/../reports/{{ inventory_hostname }}_linux_baseline.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false

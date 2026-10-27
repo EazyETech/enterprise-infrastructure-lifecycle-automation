@@ -1,0 +1,60 @@
+---
+# Searches for Windows security and critical updates and reports the results.
+#
+# Search only by default. Keep it that way until WinRM connectivity is verified
+# and the workflow has been tested in your lab.
+#
+#   Search only:       ansible-playbook playbooks/windows_maintenance.yml --ask-vault-pass
+#   Install (lab):     ansible-playbook playbooks/windows_maintenance.yml --ask-vault-pass -e authorize_updates=true
+#   Allow reboot too:  add -e allow_reboot=true
+#
+- name: Windows update check
+  hosts: windows
+  gather_facts: false
+  serial: 1
+
+  tasks:
+    - name: Confirm WinRM connectivity
+      ansible.windows.win_ping:
+
+    - name: Search for security and critical updates
+      ansible.windows.win_updates:
+        category_names:
+          - SecurityUpdates
+          - CriticalUpdates
+        state: "{{ 'installed' if authorize_updates | bool else 'searched' }}"
+        reboot: "{{ allow_reboot | bool }}"
+      register: update_result
+
+    - name: Report update results
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          mode: "{{ 'install' if authorize_updates | bool else 'search only' }}"
+          updates_found: "{{ update_result.found_update_count | default(0) }}"
+          updates_installed: "{{ update_result.installed_update_count | default(0) }}"
+          reboot_required: "{{ update_result.reboot_required | default(false) }}"
+
+    - name: List the updates that were found
+      ansible.builtin.debug:
+        msg: "{{ item.value.title }} (KB {{ item.value.kb | join(', ') }})"
+      loop: "{{ update_result.updates | default({}) | dict2items }}"
+      loop_control:
+        label: "{{ item.value.title }}"
+
+    - name: Post check | required services must be running
+      ansible.windows.win_service_info:
+        name: "{{ item }}"
+      loop: "{{ required_services }}"
+      register: post_services
+
+    - name: Post check | fail if a required service is down
+      ansible.builtin.assert:
+        that:
+          - item.services | length > 0
+          - item.services[0].state == 'started'
+        fail_msg: "Service {{ item.item }} is not running after the update check on {{ inventory_hostname }}."
+        quiet: true
+      loop: "{{ post_services.results }}"
+      loop_control:
+        label: "{{ item.item }}"

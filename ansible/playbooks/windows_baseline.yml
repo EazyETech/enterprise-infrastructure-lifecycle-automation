@@ -1,0 +1,56 @@
+---
+# Collects a read only health baseline from Windows hosts over WinRM.
+#
+#   ansible-playbook playbooks/windows_baseline.yml --ask-vault-pass
+#
+- name: Windows baseline health check
+  hosts: windows
+  gather_facts: true
+
+  tasks:
+    - name: Confirm WinRM connectivity
+      ansible.windows.win_ping:
+
+    - name: Query required services
+      ansible.windows.win_service_info:
+        name: "{{ item }}"
+      loop: "{{ required_services }}"
+      register: service_results
+
+    - name: Collect disk usage
+      ansible.windows.win_powershell:
+        script: |
+          Get-PSDrive -PSProvider FileSystem |
+            Where-Object { $_.Used -ne $null } |
+            ForEach-Object {
+              [pscustomobject]@{
+                Drive   = $_.Name
+                UsedGB  = [math]::Round($_.Used / 1GB, 1)
+                FreeGB  = [math]::Round($_.Free / 1GB, 1)
+              }
+            }
+      register: disk_results
+      changed_when: false
+
+    - name: Show system summary
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          os: "{{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }}"
+          uptime_hours: "{{ (ansible_facts.uptime_seconds / 3600) | round(1) }}"
+          disks: "{{ disk_results.output }}"
+
+    - name: Show service state
+      ansible.builtin.debug:
+        msg: "{{ item.item }} is {{ item.services[0].state | default('not-found') }}"
+      loop: "{{ service_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Warn about required services that are not running
+      ansible.builtin.debug:
+        msg: "WARNING: {{ item.item }} is not running on {{ inventory_hostname }}"
+      loop: "{{ service_results.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: (item.services | length == 0) or (item.services[0].state != 'started')

@@ -1,0 +1,18 @@
+---
+# Connection
+ansible_user: student
+ansible_become: true
+
+# Desired state: services that must be running on every Linux host
+required_services:
+  - sshd
+  - chronyd
+
+# Disk thresholds (percent used)
+disk_warn_percent: 80
+disk_fail_percent: 90
+
+# Maintenance safety switches (override on the command line with -e)
+authorize_updates: false
+allow_reboot: false
+security_updates_only: true

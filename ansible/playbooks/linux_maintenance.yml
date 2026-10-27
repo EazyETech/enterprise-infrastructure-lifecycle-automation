@@ -1,0 +1,116 @@
+---
+# Controlled maintenance workflow for RHEL family hosts.
+#
+# Safe by default: it only checks. Nothing is installed or rebooted unless you
+# explicitly authorize it.
+#
+#   Check only:        ansible-playbook playbooks/linux_maintenance.yml
+#   One host:          ansible-playbook playbooks/linux_maintenance.yml -e target_hosts=serverb
+#   Install updates:   ansible-playbook playbooks/linux_maintenance.yml -e authorize_updates=true
+#   Allow a reboot:    ansible-playbook playbooks/linux_maintenance.yml -e authorize_updates=true -e allow_reboot=true
+#
+- name: Linux controlled maintenance
+  hosts: "{{ target_hosts | default('linux') }}"
+  become: true
+  gather_facts: true
+  serial: 1   # one host at a time, so a bad change never hits the whole fleet
+
+  tasks:
+    # ---------- Pre maintenance checks ----------
+    - name: Pre check | find root filesystem usage
+      ansible.builtin.set_fact:
+        root_used_pre: >-
+          {{ (((ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_total
+               - (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_available)
+              * 100 / (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_total) | round(1) }}
+
+    - name: Pre check | stop if the disk is too full to patch safely
+      ansible.builtin.assert:
+        that:
+          - root_used_pre | float < disk_fail_percent | float
+        fail_msg: "Root filesystem is {{ root_used_pre }}% full (limit {{ disk_fail_percent }}%). Free space before patching."
+        success_msg: "Root filesystem is {{ root_used_pre }}% full. OK to continue."
+
+    - name: Pre check | gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Pre check | required services must already be running
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services[item ~ '.service'].state | default('not-found') == 'running'
+        fail_msg: "Required service {{ item }} is not running before maintenance. Fix it first."
+        quiet: true
+      loop: "{{ required_services }}"
+
+    # ---------- Check for updates ----------
+    - name: Check for available updates (rc 100 means updates exist)
+      ansible.builtin.command:
+        cmd: "dnf -q check-update {{ '--security' if security_updates_only | bool else '' }}"
+      register: update_check
+      changed_when: false
+      failed_when: update_check.rc not in [0, 100]
+
+    - name: Report update availability
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Updates are available.' if update_check.rc == 100 else 'System is up to date.' }}
+          Installing is {{ 'AUTHORIZED' if authorize_updates | bool else 'NOT authorized (check only mode)' }}.
+
+    # ---------- Apply updates (only when authorized) ----------
+    - name: Install updates
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+        update_only: true
+        security: "{{ security_updates_only | bool }}"
+      when:
+        - authorize_updates | bool
+        - update_check.rc == 100
+      register: update_result
+
+    - name: Check whether a reboot is required
+      ansible.builtin.command:
+        cmd: dnf needs-restarting -r
+      register: reboot_check
+      changed_when: false
+      failed_when: reboot_check.rc not in [0, 1]
+
+    - name: Reboot when authorized and required
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+        msg: "Planned maintenance reboot started by Ansible"
+      when:
+        - allow_reboot | bool
+        - reboot_check.rc == 1
+
+    - name: Warn if a reboot is needed but not authorized
+      ansible.builtin.debug:
+        msg: "A reboot is required on {{ inventory_hostname }} but allow_reboot is false."
+      when:
+        - not (allow_reboot | bool)
+        - reboot_check.rc == 1
+
+    # ---------- Post maintenance verification ----------
+    - name: Post check | refresh facts and service state
+      ansible.builtin.setup:
+        gather_subset: mounts
+
+    - name: Post check | gather service facts again
+      ansible.builtin.service_facts:
+
+    - name: Post check | required services must be running
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services[item ~ '.service'].state | default('not-found') == 'running'
+        fail_msg: "Service {{ item }} is not running after maintenance on {{ inventory_hostname }}."
+        success_msg: "Service {{ item }} is running."
+      loop: "{{ required_services }}"
+
+    - name: Post check | root filesystem usage
+      ansible.builtin.debug:
+        msg: >-
+          Root filesystem is now
+          {{ (((ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_total
+               - (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_available)
+              * 100 / (ansible_facts.mounts | selectattr('mount', 'equalto', '/') | first).size_total) | round(1) }}%
+          full (was {{ root_used_pre }}%).
