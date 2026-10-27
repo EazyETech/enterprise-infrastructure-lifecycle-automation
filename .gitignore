@@ -1,0 +1,30 @@
+# Secrets and credentials (never commit these)
+.vault_pass
+*.vault
+**/vault/
+id_rsa
+id_rsa.pub
+*.pem
+*.key
+.env
+
+# Ansible
+*.retry
+ansible/inventory/hosts.yml
+ansible/reports/
+ansible/collections/ansible_collections/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+override.tf
+override.tf.json
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
